@@ -307,7 +307,7 @@
     const ALERT_TIMEOUT_MS = 10000; 
 
     // ▼▼▼ ここにGoogle Apps ScriptのウェブアプリURL（デプロイ後に発行されるもの）を貼り付ける ▼▼▼
-    const GAS_URL = 'ここにデプロイしたウェブアプリのURLを貼る';
+    const GAS_URL = 'https://script.google.com/macros/s/AKfycbwYIKkd-Ts4fFQmpKdPlGfyfahn2xBlsOhS1lvFG5JvkPdRHWx4xsvqX7sqJvWf_Ep-1g/exec';
     const isGasConfigured = () => GAS_URL && GAS_URL.startsWith('https://script.google.com/');
 
     let currentMode = 'takeout';
@@ -367,7 +367,7 @@
                 this.value = '';
             }
         }
-    });
+    });っx
 
     function addDummyScan(forcedMode) {
         const targetMode = forcedMode || currentMode;
