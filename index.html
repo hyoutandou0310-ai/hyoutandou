@@ -205,7 +205,10 @@
 <div class="container">
     <header>
         <h1>BASE 一括在庫管理</h1>
-        <div style="font-size: 0.8rem; color: #dc2626; font-weight: bold;">● 売り切れ警告音（強力版）搭載</div>
+        <div style="text-align:right; font-size: 0.75rem;">
+            <div style="color: #dc2626; font-weight: bold;">● 売り切れ警告音（強力版）搭載</div>
+            <div id="connStatus" style="color:#94a3b8; font-weight:bold; margin-top:2px;">● DB接続確認中…</div>
+        </div>
     </header>
 
     <div class="mode-grid">
@@ -303,12 +306,48 @@
 
     const ALERT_TIMEOUT_MS = 10000; 
 
+    // ▼▼▼ ここにGoogle Apps ScriptのウェブアプリURL（デプロイ後に発行されるもの）を貼り付ける ▼▼▼
+    const GAS_URL = 'ここにデプロイしたウェブアプリのURLを貼る';
+    const isGasConfigured = () => GAS_URL && GAS_URL.startsWith('https://script.google.com/');
+
     let currentMode = 'takeout';
     let scanQueue = [];
     let executedHistory = [];
     let sellAlertTimer = null;
 
     const barcodeInput = document.getElementById('barcodeInput');
+
+    // 起動時：スプレッドシートに接続できるか確認し、直近の履歴を読み込む
+    window.addEventListener('DOMContentLoaded', initApp);
+
+    async function initApp() {
+        const statusEl = document.getElementById('connStatus');
+        if (!isGasConfigured()) {
+            statusEl.textContent = '● オフラインモード（未接続・端末内のみ）';
+            statusEl.style.color = '#d97706';
+            return;
+        }
+        try {
+            const res = await fetch(`${GAS_URL}?action=getHistory`);
+            const data = await res.json();
+            if (data.ok) {
+                executedHistory = data.history.map(h => ({
+                    datetime: h.datetime,
+                    code: h.code,
+                    modeName: h.modeName
+                }));
+                renderExecutedTable();
+                statusEl.textContent = '● スプレッドシートDBに接続中';
+                statusEl.style.color = '#16a34a';
+            } else {
+                throw new Error(data.error || '不明なエラー');
+            }
+        } catch (err) {
+            statusEl.textContent = '● DB接続エラー（オフラインで継続）';
+            statusEl.style.color = '#dc2626';
+            console.error(err);
+        }
+    }
 
     function selectMode(modeKey) {
         currentMode = modeKey;
@@ -422,35 +461,64 @@
         playLoudAlertSound();
     }
 
-    function executeBatch() {
+    async function executeBatch() {
         if (scanQueue.length === 0) return;
 
         const count = scanQueue.length;
-        
-        if (confirm(`全${count}点実行しますか？`)) {
-            clearTimeout(sellAlertTimer);
-            
-            const now = new Date();
-            const dateStr = now.toLocaleDateString();
-            const timeStr = now.toLocaleTimeString();
+        if (!confirm(`全${count}点実行しますか？`)) return;
 
-            scanQueue.forEach(item => {
-                executedHistory.unshift({
-                    date: dateStr,
-                    time: timeStr,
-                    code: item.code,
-                    modeName: MODES[item.mode]
-                });
-            });
+        clearTimeout(sellAlertTimer);
+        const execBtn = document.getElementById('execBtn');
+        const itemsToSend = scanQueue.map(item => ({ code: item.code, mode: item.mode }));
 
-            renderExecutedTable();
-            scanQueue = [];
-            renderTable();
-            checkAndSetTimer();
-
-            alert(`【完了】\n全${count}点のデータをBASEへ送信完了しました！`);
-            showToast('success', `${count}件の更新処理が完了しました。`);
+        if (!isGasConfigured()) {
+            // 未接続時は従来どおり端末内のみで記録（動作確認用）
+            commitLocalHistory(itemsToSend);
+            alert(`【完了・オフライン】\n全${count}点をローカルに記録しました（DB未接続）。`);
+            showToast('warning', `${count}件をオフラインで記録しました。GAS_URLを設定するとスプレッドシートに保存されます。`);
+            return;
         }
+
+        execBtn.disabled = true;
+        execBtn.textContent = '送信中…';
+
+        try {
+            const res = await fetch(GAS_URL, {
+                method: 'POST',
+                // GASのCORSプリフライト回避のため text/plain で送り、サーバー側でJSON.parseする
+                headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                body: JSON.stringify({ action: 'batchUpdate', items: itemsToSend })
+            });
+            const data = await res.json();
+            if (!data.ok) throw new Error(data.error || '不明なエラー');
+
+            commitLocalHistory(itemsToSend);
+            alert(`【完了】\n全${count}点のデータをスプレッドシートDBへ送信完了しました！`);
+            showToast('success', `${count}件の更新処理が完了しました。`);
+        } catch (err) {
+            console.error(err);
+            alert(`【送信失敗】\nスプレッドシートへの送信に失敗しました。\nリストは削除せず保持します。\n(${err.message})`);
+            showToast('danger', 'DBへの送信に失敗しました。通信環境を確認し再実行してください。');
+        } finally {
+            execBtn.disabled = scanQueue.length === 0;
+            execBtn.textContent = '一括実行する（BASE書き換え）';
+        }
+    }
+
+    function commitLocalHistory(items) {
+        const now = new Date();
+        const datetimeStr = now.toLocaleDateString() + ' ' + now.toLocaleTimeString();
+        items.forEach(item => {
+            executedHistory.unshift({
+                datetime: datetimeStr,
+                code: item.code,
+                modeName: MODES[item.mode]
+            });
+        });
+        renderExecutedTable();
+        scanQueue = [];
+        renderTable();
+        checkAndSetTimer();
     }
 
     function renderExecutedTable() {
@@ -459,7 +527,7 @@
         executedHistory.forEach(item => {
             const row = document.createElement('tr');
             row.innerHTML = `
-                <td>${item.time}</td>
+                <td>${item.datetime}</td>
                 <td><strong>${item.code}</strong></td>
                 <td>${item.modeName}</td>
                 <td><span class="badge-history">完了</span></td>
@@ -474,10 +542,10 @@
     function exportToCSV() {
         if (executedHistory.length === 0) return;
 
-        let csvContent = "実行日付,実行時刻,商品ID/コード,実行した処理,ステータス\n";
+        let csvContent = "実行日時,商品ID/コード,実行した処理,ステータス\n";
 
         executedHistory.forEach(item => {
-            csvContent += `"${item.date}","${item.time}","${item.code}","${item.modeName}","完了"\n`;
+            csvContent += `"${item.datetime}","${item.code}","${item.modeName}","完了"\n`;
         });
 
         const blob = new Blob(["\uFEFF" + csvContent], { type: "text/csv;charset=utf-8;" });
